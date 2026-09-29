@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+
+
+def total(values: Iterable[int | None]) -> int | None:
+    """Sum the values, or ``None`` when any of them is unknown."""
+    summed = 0
+    for value in values:
+        if value is None:
+            return None
+        summed += value
+    return summed
+
+
+def _format_value(value: int | None) -> str:
+    return "?" if value is None else str(value)
 
 
 @dataclass
@@ -80,5 +95,47 @@ class SheetResult:
 
     @property
     def total_pins(self) -> int | None:
-        scores = [throw.score for throw in self.throws]
-        return None if any(score is None for score in scores) else sum(scores)  # type: ignore[arg-type]
+        return total(throw.score for throw in self.throws)
+
+    def __str__(self) -> str:
+        """Format the detailed results and score summary."""
+        lines: list[str] = []
+        for throw in self.throws:
+            pins = "".join(_format_value(pin) for pin in throw.pins)
+            review = " REVIEW" if throw.needs_review else ""
+            position = f"C{throw.column:02} R{throw.row:02}"
+            lines.append(
+                f"{position} {pins} => {_format_value(throw.score)} "
+                f"det={throw.detection_confidence:.2f} "
+                f"cls={throw.classification_confidence:.2f}{review}"
+            )
+
+        scored = [
+            (throw, throw.score) for throw in self.throws if throw.score is not None
+        ]
+        if len(scored) != len(self.throws):
+            lines.append("Zwischensummen: ? - mindestens ein Wurf ist unklar")
+        else:
+            by_row = self.columns > self.rows_per_column
+            totals: dict[int, int] = {}
+            for throw, score in scored:
+                key = throw.row if by_row else throw.column
+                totals[key] = totals.get(key, 0) + score
+
+            keys = sorted(totals)
+            for full_key, clearing_key in zip(keys[::2], keys[1::2]):
+                full, clearing = totals[full_key], totals[clearing_key]
+                label = (
+                    f"Satz {full_key // 2 + 1}"
+                    if by_row
+                    else f"Bahn C{full_key}+C{clearing_key}"
+                )
+                lines.extend(
+                    (
+                        f"{label}: Volle={full}",
+                        f"Abr={clearing} Total={full + clearing}",
+                    )
+                )
+
+        lines.append(f"Total: {_format_value(self.total_pins)}")
+        return "\n".join(lines)

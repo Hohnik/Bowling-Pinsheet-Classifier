@@ -39,7 +39,10 @@ def find_sheet_quad(gray: np.ndarray) -> np.ndarray | None:
         approximation = cv2.approxPolyDP(
             contour, 0.02 * cv2.arcLength(contour, True), True
         )
-        if len(approximation) == 4 and cv2.contourArea(approximation) >= 0.15 * image_area:
+        if (
+            len(approximation) == 4
+            and cv2.contourArea(approximation) >= 0.15 * image_area
+        ):
             return _order_corners(approximation.reshape(4, 2).astype(np.float32))
     return None
 

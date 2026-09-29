@@ -26,7 +26,9 @@ def find_sheet_quad(gray: np.ndarray) -> np.ndarray | None:
     """Find four corners of the score-sheet table, or ``None``."""
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 30, 120)
-    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=2)
+    edges = cv2.dilate(
+        edges, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=2
+    )
 
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     img_area = gray.shape[0] * gray.shape[1]
@@ -45,9 +47,9 @@ def rectify_sheet(
 ) -> np.ndarray:
     """Perspective-correct and CLAHE-normalise a raw sheet photo.
 
-    The output height is fixed at *height* pixels; the width is derived
-    from the detected quad's aspect ratio so that pin diagrams are never
-    stretched.  Falls back to CLAHE-only if no quad is found.
+    When a quad is found, the output height is fixed at *height* pixels and
+    the width follows its aspect ratio. Falls back to CLAHE-only if no quad
+    is found.
     """
     gray = _to_gray(image)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -64,7 +66,10 @@ def rectify_sheet(
 
     dst = np.array([[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float32)
     warped = cv2.warpPerspective(
-        gray, cv2.getPerspectiveTransform(quad, dst), (width, height),
-        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+        gray,
+        cv2.getPerspectiveTransform(quad, dst),
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
     )
     return clahe.apply(warped)

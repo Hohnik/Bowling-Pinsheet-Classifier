@@ -50,14 +50,20 @@ DEFAULT_CONFIG = AugmentConfig()
 # ── Photometric ────────────────────────────────────────────────────────────
 
 
-def _apply_brightness(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_brightness(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     lo, hi = cfg.brightness_range
     if lo == 0 and hi == 0:
         return img
-    return np.clip(img.astype(np.int16) + int(rng.integers(lo, hi + 1)), 0, 255).astype(np.uint8)
+    return np.clip(img.astype(np.int16) + int(rng.integers(lo, hi + 1)), 0, 255).astype(
+        np.uint8
+    )
 
 
-def _apply_gamma(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_gamma(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """Power-law contrast shift — simulates different scanner exposure."""
     lo, hi = cfg.gamma_range
     if lo == 1.0 and hi == 1.0:
@@ -67,7 +73,9 @@ def _apply_gamma(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) 
     return table.astype(np.uint8)[img]
 
 
-def _apply_noise(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_noise(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     lo, hi = cfg.noise_sigma_range
     if hi <= 0:
         return img
@@ -77,7 +85,9 @@ def _apply_noise(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) 
     ).astype(np.uint8)
 
 
-def _apply_shadow(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_shadow(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """Add a linear brightness gradient — simulates uneven lighting."""
     if rng.random() >= cfg.shadow_probability:
         return img
@@ -100,7 +110,9 @@ def _apply_shadow(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig)
 # ── Geometric ──────────────────────────────────────────────────────────────
 
 
-def _apply_rotation(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_rotation(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     if cfg.max_rotation_deg <= 0:
         return img
     angle = rng.uniform(-cfg.max_rotation_deg, cfg.max_rotation_deg)
@@ -109,7 +121,9 @@ def _apply_rotation(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfi
     return cv2.warpAffine(img, mat, (w, h), borderValue=int(img[0, 0]))
 
 
-def _apply_scale_jitter(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_scale_jitter(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """Uniform scale jitter (preserves aspect ratio)."""
     lo, hi = cfg.scale_range
     if lo == 1.0 and hi == 1.0:
@@ -119,11 +133,14 @@ def _apply_scale_jitter(img: np.ndarray, rng: np.random.Generator, cfg: AugmentC
     nw, nh = max(4, int(w * s)), max(4, int(h * s))
     return cv2.resize(
         cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA),
-        (w, h), interpolation=cv2.INTER_AREA,
+        (w, h),
+        interpolation=cv2.INTER_AREA,
     )
 
 
-def _apply_aspect_jitter(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_aspect_jitter(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """Independent x/y stretch — simulates camera angle and scan distortion."""
     lo, hi = cfg.aspect_jitter
     if lo == 1.0 and hi == 1.0:
@@ -133,11 +150,14 @@ def _apply_aspect_jitter(img: np.ndarray, rng: np.random.Generator, cfg: Augment
     nw, nh = max(4, int(w * sx)), max(4, int(h * sy))
     return cv2.resize(
         cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA),
-        (w, h), interpolation=cv2.INTER_AREA,
+        (w, h),
+        interpolation=cv2.INTER_AREA,
     )
 
 
-def _apply_perspective(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_perspective(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """Random perspective warp — simulates tilted camera / non-flat paper."""
     if cfg.perspective_strength <= 0:
         return img
@@ -153,7 +173,9 @@ def _apply_perspective(img: np.ndarray, rng: np.random.Generator, cfg: AugmentCo
 # ── Degradation ────────────────────────────────────────────────────────────
 
 
-def _apply_blur(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_blur(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     if not cfg.blur_kernels:
         return img
     k = int(rng.choice(cfg.blur_kernels))
@@ -162,7 +184,9 @@ def _apply_blur(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -
     return cv2.GaussianBlur(img, (k, k), sigmaX=rng.uniform(*cfg.blur_sigma_range))
 
 
-def _apply_motion_blur(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_motion_blur(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """Directional blur — simulates camera shake."""
     if rng.random() >= cfg.motion_blur_probability:
         return img
@@ -172,16 +196,18 @@ def _apply_motion_blur(img: np.ndarray, rng: np.random.Generator, cfg: AugmentCo
     cos_a, sin_a = np.cos(np.radians(angle)), np.sin(np.radians(angle))
     cx, cy = k // 2, k // 2
     for i in range(k):
-        t = (i - cx)
-        x = int(round(cx + t * cos_a))
-        y = int(round(cy + t * sin_a))
+        t = i - cx
+        x = round(cx + t * cos_a)
+        y = round(cy + t * sin_a)
         if 0 <= x < k and 0 <= y < k:
             kernel[y, x] = 1.0
     kernel /= max(kernel.sum(), 1)
     return cv2.filter2D(img, -1, kernel)
 
 
-def _apply_jpeg(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_jpeg(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     """JPEG encode/decode — simulates re-compression artifacts."""
     if rng.random() >= cfg.jpeg_probability:
         return img
@@ -194,7 +220,9 @@ def _apply_jpeg(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -
 # ── Structural ─────────────────────────────────────────────────────────────
 
 
-def _apply_grid_lines(img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig) -> np.ndarray:
+def _apply_grid_lines(
+    img: np.ndarray, rng: np.random.Generator, cfg: AugmentConfig
+) -> np.ndarray:
     if rng.random() >= cfg.grid_line_probability:
         return img
     h, w = img.shape[:2]

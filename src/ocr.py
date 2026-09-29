@@ -68,16 +68,14 @@ def _ocr_one(roi: np.ndarray) -> int | None:
 
     for img in [up, None]:  # None = trigger binarised fallback
         if img is None:
-            _, img = cv2.threshold(
-                up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
+            _, img = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         try:
             data = pytesseract.image_to_data(
                 img,
                 config=_TSR_CFG,
                 output_type=pytesseract.Output.DICT,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - optional external process
             continue
         for txt, conf in zip(data["text"], data["conf"]):
             txt = txt.strip()

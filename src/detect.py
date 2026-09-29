@@ -1,4 +1,4 @@
-"""Pin diagram detection: classical blob analysis with YOLO fallback."""
+"""Pin diagram detection with layout-aware and learned detectors."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def detect_pin_diagrams_classical(image: np.ndarray) -> list[Detection]:
 
     # Keep only dot-sized blobs (individual pin symbols).
     min_side, max_side = max(2, int(w * 0.003)), max(8, int(w * 0.020))
-    min_area, max_area = min_side ** 2, (max_side * 2) ** 2
+    min_area, max_area = min_side**2, (max_side * 2) ** 2
 
     n_cc, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(binary)
     dot_mask = np.zeros_like(binary)
@@ -69,8 +69,12 @@ def detect_pin_diagrams_classical(image: np.ndarray) -> list[Detection]:
         bw = cc_stats[i, cv2.CC_STAT_WIDTH]
         bh = cc_stats[i, cv2.CC_STAT_HEIGHT]
         area = cc_stats[i, cv2.CC_STAT_AREA]
-        if (min_side <= bw <= max_side and min_side <= bh <= max_side
-                and min_area <= area <= max_area and 0.25 <= bw / max(bh, 1) <= 4.0):
+        if (
+            min_side <= bw <= max_side
+            and min_side <= bh <= max_side
+            and min_area <= area <= max_area
+            and 0.25 <= bw / max(bh, 1) <= 4.0
+        ):
             dot_mask[cc_labels == i] = 255
 
     # Close nearby dots into diagram-level blobs.
@@ -85,14 +89,92 @@ def detect_pin_diagrams_classical(image: np.ndarray) -> list[Detection]:
     for i in range(1, n_diag):
         dw, dh = d_stats[i, cv2.CC_STAT_WIDTH], d_stats[i, cv2.CC_STAT_HEIGHT]
         cx, cy = d_centroids[i]
-        if (min_diag <= dw <= max_diag and min_diag <= dh <= max_diag
-                and 0.4 <= dw / max(dh, 1) <= 2.5):
-            detections.append(Detection(float(cx), float(cy), float(dw), float(dh), 1.0))
+        if (
+            min_diag <= dw <= max_diag
+            and min_diag <= dh <= max_diag
+            and 0.4 <= dw / max(dh, 1) <= 2.5
+        ):
+            detections.append(
+                Detection(float(cx), float(cy), float(dw), float(dh), 1.0)
+            )
     return detections
 
 
+def detect_bordered_diagrams(image: np.ndarray) -> list[Detection]:
+    """Detect diagrams enclosed by individual rectangular cells.
+
+    Some electronic score sheets use one box per diagram. Contour detection is
+    more reliable for that layout than a detector trained on the unboxed form.
+    Candidates must contain the nine round pin marks, which rejects text boxes.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    _, width = gray.shape
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kernel_size = max(3, round(width * 0.004))
+    closed = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size)),
+    )
+    contours, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    detections: list[Detection] = []
+    min_side, max_side = width * 0.025, width * 0.12
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        if not (
+            min_side <= box_width <= max_side
+            and min_side <= box_height <= max_side
+            and 0.5 <= box_width / box_height <= 1.8
+            and cv2.contourArea(contour) >= 0.4 * box_width * box_height
+        ):
+            continue
+
+        crop = binary[y : y + box_height, x : x + box_width]
+        count, _, stats, _ = cv2.connectedComponentsWithStats(crop)
+        round_marks = 0
+        for index in range(1, count):
+            mark_width = stats[index, cv2.CC_STAT_WIDTH]
+            mark_height = stats[index, cv2.CC_STAT_HEIGHT]
+            if (
+                0.07 * box_width <= mark_width <= 0.25 * box_width
+                and 0.07 * box_height <= mark_height <= 0.25 * box_height
+                and 0.45 <= mark_width / mark_height <= 1.8
+            ):
+                round_marks += 1
+        if round_marks >= 9:
+            detections.append(
+                Detection(
+                    x + box_width / 2,
+                    y + box_height / 2,
+                    float(box_width),
+                    float(box_height),
+                    1.0,
+                )
+            )
+
+    # Closing normally gives one contour per cell. Keep only the larger box if
+    # a print artifact produces nested candidates for the same cell.
+    kept: list[Detection] = []
+    for detection in sorted(
+        detections, key=lambda item: item.width * item.height, reverse=True
+    ):
+        if any(
+            abs(detection.x_center - other.x_center)
+            < min(detection.width, other.width) / 2
+            and abs(detection.y_center - other.y_center)
+            < min(detection.height, other.height) / 2
+            for other in kept
+        ):
+            continue
+        kept.append(detection)
+    return kept
+
+
 def detect_pin_diagrams_yolo(
-    model: YOLOModel, image: np.ndarray, confidence_threshold: float = 0.25,
+    model: YOLOModel,
+    image: np.ndarray,
+    confidence_threshold: float = 0.25,
 ) -> list[Detection]:
     """Run YOLO inference and return unsorted detections."""
     if image.ndim == 2:
@@ -113,24 +195,30 @@ def detect_pin_diagrams(
     confidence_threshold: float = 0.25,
     min_yolo: int = 10,
 ) -> list[Detection]:
-    """YOLO first (if available); classical fallback otherwise.
+    """Use the detector that best matches the sheet layout.
 
-    If YOLO returns fewer than *min_yolo* detections the classical detector
-    is also run and the result with the larger count is returned.  This guards
-    against the case where YOLO has low confidence on an unseen sheet style
-    and returns only a handful of boxes instead of the expected 90–120.
+    Rectangular cells are deterministic and take priority when present. YOLO
+    handles the older unboxed layout. Blob analysis is the final fallback.
     """
-    if model is not None:
-        yolo_dets = detect_pin_diagrams_yolo(model, image, confidence_threshold)
-        if len(yolo_dets) >= min_yolo:
-            return yolo_dets
-        # YOLO returned suspiciously few — compare with classical
-        classical_dets = detect_pin_diagrams_classical(image)
-        return yolo_dets if len(yolo_dets) >= len(classical_dets) else classical_dets
-    return detect_pin_diagrams_classical(image)
+    bordered = detect_bordered_diagrams(image)
+    if len(bordered) >= min_yolo:
+        return bordered
+
+    yolo_dets = (
+        detect_pin_diagrams_yolo(model, image, confidence_threshold)
+        if model is not None
+        else []
+    )
+    if len(yolo_dets) >= min_yolo:
+        return yolo_dets
+
+    classical_dets = detect_pin_diagrams_classical(image)
+    return max((bordered, yolo_dets, classical_dets), key=len)
 
 
-def _cluster_by_x(detections: list[Detection], gap_factor: float = 0.5) -> list[list[Detection]]:
+def _cluster_by_x(
+    detections: list[Detection], gap_factor: float = 0.5
+) -> list[list[Detection]]:
     """Cluster detections into columns based on x-center proximity."""
     if not detections:
         return []
@@ -158,12 +246,16 @@ def sort_detections(detections: list[Detection]) -> list[Detection]:
     return ordered
 
 
-def crop_detections(image: np.ndarray, detections: list[Detection], padding: int = 2) -> list[np.ndarray]:
+def crop_detections(
+    image: np.ndarray, detections: list[Detection], padding: int = 2
+) -> list[np.ndarray]:
     """Crop detected regions from *image*."""
     h, w = image.shape[:2]
     return [
-        image[max(0, d.y_min - padding):min(h, d.y_max + padding),
-              max(0, d.x_min - padding):min(w, d.x_max + padding)].copy()
+        image[
+            max(0, d.y_min - padding) : min(h, d.y_max + padding),
+            max(0, d.x_min - padding) : min(w, d.x_max + padding),
+        ].copy()
         for d in detections
     ]
 
@@ -172,7 +264,16 @@ def draw_detections(image: np.ndarray, detections: list[Detection]) -> np.ndarra
     """Draw bounding boxes on a copy of *image* for debugging."""
     out = image.copy()
     for det in detections:
-        cv2.rectangle(out, (det.x_min, det.y_min), (det.x_max, det.y_max), (0, 255, 0), 2)
-        cv2.putText(out, f"c{det.column}r{det.row} {det.confidence:.2f}",
-                    (det.x_min, det.y_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        cv2.rectangle(
+            out, (det.x_min, det.y_min), (det.x_max, det.y_max), (0, 255, 0), 2
+        )
+        cv2.putText(
+            out,
+            f"c{det.column}r{det.row} {det.confidence:.2f}",
+            (det.x_min, det.y_min - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (0, 255, 0),
+            1,
+        )
     return out

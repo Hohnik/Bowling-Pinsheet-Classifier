@@ -10,20 +10,21 @@ requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.4.2",
     "opencv-python>=4.13.0.92",
-    "optuna>=4.7.0",
     "torch>=2.0.0",
-    "tqdm>=4.67.3",
     "typer>=0.23.1",
     "ultralytics>=8.3.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.0.2",
     "ruff>=0.8.0",
 ]
 ocr = [
     "pytesseract>=0.3.10",
+]
+train = [
+    "optuna>=4.7.0",
+    "tqdm>=4.67.3",
 ]
 
 [project.scripts]
@@ -37,15 +38,3 @@ build-backend = "hatchling.build"
 packages = ["src"]
 sources = {"src" = ""}
 artifacts = ["src/labeler.html"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-markers = [
-    "integration: end-to-end tests that require trained model weights",
-]
-
-[dependency-groups]
-dev = [
-    "pyinstrument>=5.1.2",
-]

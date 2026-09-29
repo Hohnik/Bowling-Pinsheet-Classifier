@@ -9,13 +9,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset
 
 from augment import AugmentConfig, augment
 from classify import preprocess_crop
-from model import NUM_PINS, PinClassifier
+from model import PinClassifier
 
 HYPERPARAMS_PATH = Path("models/hyperparams.json")
 
@@ -26,7 +26,7 @@ DEFAULTS: dict[str, float | int] = {
     "batch_size": 16,
 }
 
-LABEL_SMOOTH: float = 0.05   # prevents overconfidence on small datasets
+LABEL_SMOOTH: float = 0.05  # prevents overconfidence on small datasets
 WARMUP_FRACTION: float = 0.1  # first 10% of epochs = linear warmup
 
 _TRAIN_AUGMENT = AugmentConfig(
@@ -54,8 +54,14 @@ def load_hyperparams() -> dict[str, float | int]:
 class CropDataset(Dataset):
     """Pin-diagram crops with optional online augmentation."""
 
-    def __init__(self, image_dir: Path, entries: list[tuple[str, list[int]]], *,
-                 augment_cfg: AugmentConfig | None = None, seed: int = 0) -> None:
+    def __init__(
+        self,
+        image_dir: Path,
+        entries: list[tuple[str, list[int]]],
+        *,
+        augment_cfg: AugmentConfig | None = None,
+        seed: int = 0,
+    ) -> None:
         self.image_dir, self.entries, self.augment_cfg = image_dir, entries, augment_cfg
         self._rng = np.random.default_rng(seed)
 
@@ -69,18 +75,24 @@ class CropDataset(Dataset):
             raise FileNotFoundError(f"Missing crop: {self.image_dir / filename}")
         if self.augment_cfg is not None:
             img = augment(img, self._rng, self.augment_cfg)
-        return torch.from_numpy(preprocess_crop(img)).unsqueeze(0), torch.tensor(pins, dtype=torch.float32)
+        return torch.from_numpy(preprocess_crop(img)).unsqueeze(0), torch.tensor(
+            pins, dtype=torch.float32
+        )
 
 
 def split_entries(
-    entries: list[tuple[str, list[int]]], val_fraction: float, seed: int,
+    entries: list[tuple[str, list[int]]],
+    val_fraction: float,
+    seed: int,
 ) -> tuple[list[tuple[str, list[int]]], list[tuple[str, list[int]]]]:
     """Shuffle and split into (train, val)."""
     rng = np.random.default_rng(seed)
     idx = rng.permutation(len(entries)).tolist()
     n_val = max(1, int(len(entries) * val_fraction))
     val_set = set(idx[:n_val])
-    return [entries[i] for i in idx if i not in val_set], [entries[i] for i in idx if i in val_set]
+    return [entries[i] for i in idx if i not in val_set], [
+        entries[i] for i in idx if i in val_set
+    ]
 
 
 def _cosine_warmup_lambda(epoch: int, epochs: int, warmup: int) -> float:
@@ -114,8 +126,17 @@ def _train_loop(
     best_loss, best_acc = float("inf"), 0.0
     best_state: dict | None = None
 
-    bar = tqdm(range(epochs), desc=desc or "Training", unit="ep",
-               leave=leave, dynamic_ncols=True) if desc else range(epochs)
+    bar = (
+        tqdm(
+            range(epochs),
+            desc=desc or "Training",
+            unit="ep",
+            leave=leave,
+            dynamic_ncols=True,
+        )
+        if desc
+        else range(epochs)
+    )
 
     for _ in bar:
         model.train()
@@ -133,8 +154,10 @@ def _train_loop(
             epoch_loss += loss.item() * images.size(0)
             # Track train accuracy without an extra forward pass.
             with torch.no_grad():
-                train_correct += ((torch.sigmoid(logits) >= 0.5).float() == labels).sum().item()
-                train_total   += labels.numel()
+                train_correct += (
+                    ((torch.sigmoid(logits) >= 0.5).float() == labels).sum().item()
+                )
+                train_total += labels.numel()
         epoch_loss /= len(train_loader.dataset)  # type: ignore[arg-type]
         epoch_train_acc = train_correct / train_total if train_total else 0.0
 
@@ -146,7 +169,9 @@ def _train_loop(
                     images, labels = images.to(device), labels.to(device)
                     logits = model(images)
                     val_loss += criterion(logits, labels).item() * images.size(0)
-                    correct += ((torch.sigmoid(logits) >= 0.5).float() == labels).sum().item()
+                    correct += (
+                        ((torch.sigmoid(logits) >= 0.5).float() == labels).sum().item()
+                    )
                     total += labels.numel()
             val_loss /= len(val_loader.dataset)  # type: ignore[arg-type]
             metric, val_acc = val_loss, correct / total if total else 0.0
@@ -191,12 +216,24 @@ def train_new_model(
     torch.manual_seed(seed)
     train_loader = DataLoader(
         CropDataset(crops_dir, entries, augment_cfg=_TRAIN_AUGMENT, seed=seed),
-        batch_size=batch_size, shuffle=True)
+        batch_size=batch_size,
+        shuffle=True,
+    )
     val_loader = None
     if val_entries:
-        val_loader = DataLoader(CropDataset(crops_dir, val_entries), batch_size=batch_size)
+        val_loader = DataLoader(
+            CropDataset(crops_dir, val_entries), batch_size=batch_size
+        )
     model = PinClassifier(dropout=dropout).to(device)
-    loss, acc = _train_loop(model, train_loader, val_loader,
-                            epochs=epochs, device=device, lr=lr, weight_decay=weight_decay,
-                            desc=desc, leave=leave)
+    loss, acc = _train_loop(
+        model,
+        train_loader,
+        val_loader,
+        epochs=epochs,
+        device=device,
+        lr=lr,
+        weight_decay=weight_decay,
+        desc=desc,
+        leave=leave,
+    )
     return model, loss, acc

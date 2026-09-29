@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -24,7 +24,9 @@ SEED = 42
 
 def _require(path: Path, label: str, hint: str = "") -> None:
     if not path.exists():
-        raise typer.BadParameter(f"{label} not found at {path}." + (f" {hint}" if hint else ""))
+        raise typer.BadParameter(
+            f"{label} not found at {path}." + (f" {hint}" if hint else "")
+        )
 
 
 def _hp_keys(hp: dict) -> dict:
@@ -37,11 +39,20 @@ def _hp_keys(hp: dict) -> dict:
 
 @app.command()
 def scan(
-    images: Annotated[list[Path], typer.Argument(help="Path(s) to scanned score sheet(s).")],
-    classifier: Annotated[Optional[Path], typer.Option(help="CNN weights (.pt).")] = None,
-    confidence: Annotated[float, typer.Option(help="YOLO confidence threshold.")] = 0.25,
-    ocr: Annotated[bool, typer.Option("--ocr/--no-ocr",
-        help="Cross-validate CNN scores with Tesseract OCR (~5 s extra).")] = False,
+    images: Annotated[
+        list[Path], typer.Argument(help="Path(s) to scanned score sheet(s).")
+    ],
+    classifier: Annotated[Path | None, typer.Option(help="CNN weights (.pt).")] = None,
+    confidence: Annotated[
+        float, typer.Option(help="YOLO confidence threshold.")
+    ] = 0.25,
+    ocr: Annotated[
+        bool,
+        typer.Option(
+            "--ocr/--no-ocr",
+            help="Cross-validate CNN scores with Tesseract OCR (~5 s extra).",
+        ),
+    ] = False,
 ) -> None:
     """Scan one or more score sheets and print per-throw results.
 
@@ -58,8 +69,10 @@ def scan(
             print("-" * 40)
 
         result = process_sheet(
-            image_path=image, classifier_path=classifier,
-            confidence=confidence, use_ocr=ocr,
+            image_path=image,
+            classifier_path=classifier,
+            confidence=confidence,
+            use_ocr=ocr,
         )
         n = len(result.throws)
         print(f"Detected {n} throws across {result.columns} columns\n")
@@ -71,35 +84,58 @@ def scan(
         for t in result.throws:
             pins = "".join(str(p) for p in t.pins_down)
             flag = " ⚠ OCR mismatch" if t.ocr_mismatch else ""
-            print(f"C{t.column:>2} | R{t.row:>2} | {pins} => {t.score}"
-                  f" | det {t.confidence:.2f} | cls {t.classification_confidence:.2f}{flag}")
+            print(
+                f"C{t.column:>2} | R{t.row:>2} | {pins} => {t.score}"
+                f" | det {t.confidence:.2f} | cls {t.classification_confidence:.2f}{flag}"
+            )
 
-        # Per-column summaries (Volle/Abr pairs make up a Bahn)
-        cols: dict[int, list[int]] = {}
-        for t in result.throws:
-            cols.setdefault(t.column, []).append(t.score)
         print()
-        bahn_pairs = list(zip(sorted(cols)[::2], sorted(cols)[1::2]))
-        if bahn_pairs and all(len(cols[v]) == len(cols[a]) for v, a in bahn_pairs):
-            for v, a in bahn_pairs:
-                vt, at = sum(cols[v]), sum(cols[a])
-                print(f"Bahn (C{v}+C{a}):  Volle={vt}  Abr={at}  Total={vt + at}")
+        if result.columns > result.rows_per_column:
+            rows: dict[int, list[int]] = {}
+            for throw in result.throws:
+                rows.setdefault(throw.row, []).append(throw.score)
+            for volle_row, abraeumen_row in zip(sorted(rows)[::2], sorted(rows)[1::2]):
+                volle = sum(rows[volle_row])
+                abraeumen = sum(rows[abraeumen_row])
+                print(
+                    f"Satz {volle_row // 2 + 1}:  Volle={volle}  "
+                    f"Abr={abraeumen}  Total={volle + abraeumen}"
+                )
         else:
-            for c in sorted(cols):
-                print(f"Col {c}: {sum(cols[c])}")
+            columns: dict[int, list[int]] = {}
+            for throw in result.throws:
+                columns.setdefault(throw.column, []).append(throw.score)
+            for volle_col, abraeumen_col in zip(
+                sorted(columns)[::2], sorted(columns)[1::2]
+            ):
+                volle = sum(columns[volle_col])
+                abraeumen = sum(columns[abraeumen_col])
+                print(
+                    f"Bahn (C{volle_col}+C{abraeumen_col}):  Volle={volle}  "
+                    f"Abr={abraeumen}  Total={volle + abraeumen}"
+                )
         print(f"\nTotal pins knocked down: {result.total_pins}")
 
 
 @app.command()
 def collect(
-    images: Annotated[list[Path], typer.Argument(help="Sheet image(s) to harvest crops from.")],
+    images: Annotated[
+        list[Path], typer.Argument(help="Sheet image(s) to harvest crops from.")
+    ],
     crops: CropsOpt = Path("data/classifier/crops"),
     labels: LabelsOpt = Path("data/classifier/labels.csv"),
-    confidence_threshold: Annotated[float, typer.Option(
-        help="Minimum CNN confidence to auto-accept a prediction.")] = 0.85,
-    confidence: Annotated[float, typer.Option(help="YOLO detection confidence.")] = 0.25,
-    overwrite: Annotated[bool, typer.Option("--overwrite",
-        help="Replace existing pseudo-labels with fresh predictions.")] = False,
+    confidence_threshold: Annotated[
+        float, typer.Option(help="Minimum CNN confidence to auto-accept a prediction.")
+    ] = 0.85,
+    confidence: Annotated[
+        float, typer.Option(help="YOLO detection confidence.")
+    ] = 0.25,
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite", help="Replace existing pseudo-labels with fresh predictions."
+        ),
+    ] = False,
 ) -> None:
     """Harvest high-confidence crops from one or more sheets into the training set.
 
@@ -110,27 +146,35 @@ def collect(
     """
     import cv2
 
-    from classify import classify_pins_batch, load_classifier
+    from symbols import classify_pin_symbols
     from labels import load_labels_as_dict, save_labels
     from pipeline import DEFAULT_CLASSIFIER_PATH
 
-    _require(DEFAULT_CLASSIFIER_PATH, "Classifier weights", "Train a model first.")
     crops.mkdir(parents=True, exist_ok=True)
 
     existing = load_labels_as_dict(labels)
     n_before = len(existing)
     total_added = total_updated = total_skipped = total_dets = 0
 
-    cnn, dev = load_classifier(DEFAULT_CLASSIFIER_PATH)
+    cnn, dev = None, None
 
     for image in images:
         _require(image, "Image")
-        rectified, dets, raw_crops = _detect_and_crop(image, confidence)
+        _, dets, raw_crops = _detect_and_crop(image, confidence)
         if not dets:
             print(f"{image.name}: no pin diagrams detected")
             continue
 
-        classifications = classify_pins_batch(cnn, raw_crops, device=dev)
+        classifications = [classify_pin_symbols(crop) for crop in raw_crops]
+        if not all(result is not None for result in classifications):
+            from classify import classify_pins_batch, load_classifier
+
+            _require(
+                DEFAULT_CLASSIFIER_PATH, "Classifier weights", "Train a model first."
+            )
+            if cnn is None:
+                cnn, dev = load_classifier(DEFAULT_CLASSIFIER_PATH)
+            classifications = classify_pins_batch(cnn, raw_crops, device=dev)
         stem = image.stem
         added = updated = skipped_low = 0
 
@@ -154,9 +198,11 @@ def collect(
         total_added += added
         total_updated += updated
         total_skipped += skipped_low
-        print(f"{image.name}: {len(dets)} detected, +{added} added"
-              + (f", ~{updated} updated" if overwrite and updated else "")
-              + (f", {skipped_low} low-conf" if skipped_low else ""))
+        print(
+            f"{image.name}: {len(dets)} detected, +{added} added"
+            + (f", ~{updated} updated" if overwrite and updated else "")
+            + (f", {skipped_low} low-conf" if skipped_low else "")
+        )
 
     # Always write through save_labels so CSV is sorted consistently.
     save_labels(labels, existing)
@@ -165,8 +211,12 @@ def collect(
     print(f"Sheets: {len(images)}  |  Diagrams: {total_dets}")
     print(f"  Added:    {total_added}  (new, conf ≥ {confidence_threshold:.2f})")
     if overwrite:
-        print(f"  Updated:  {total_updated}  (refreshed, conf ≥ {confidence_threshold:.2f})")
-    print(f"  Skipped:  {total_skipped}  (conf < {confidence_threshold:.2f}) — review with `just label`")
+        print(
+            f"  Updated:  {total_updated}  (refreshed, conf ≥ {confidence_threshold:.2f})"
+        )
+    print(
+        f"  Skipped:  {total_skipped}  (conf < {confidence_threshold:.2f}) — review with `just label`"
+    )
     print(f"\nTotal labeled: {len(existing)}  (was {n_before})")
 
 
@@ -177,7 +227,9 @@ def collect(
 def train(
     crops: CropsOpt = Path("data/classifier/crops"),
     labels: LabelsOpt = Path("data/classifier/labels.csv"),
-    output: Annotated[Path, typer.Option(help="Output weights path.")] = Path("models/pin_classifier.pt"),
+    output: Annotated[Path, typer.Option(help="Output weights path.")] = Path(
+        "models/pin_classifier.pt"
+    ),
     folds: Annotated[int, typer.Option(help="Cross-validation folds.")] = 5,
     epochs: Annotated[int, typer.Option(help="Training epochs per fold.")] = 200,
 ) -> None:
@@ -200,7 +252,9 @@ def train(
     dev = resolve_device(None)
     if HYPERPARAMS_PATH.exists():
         print(f"Loaded hyperparams from {HYPERPARAMS_PATH}")
-    print(f"Device: {dev}  |  {len(all_entries)} images  |  {folds} folds  |  {epochs} epochs\n")
+    print(
+        f"Device: {dev}  |  {len(all_entries)} images  |  {folds} folds  |  {epochs} epochs\n"
+    )
 
     indices = np.random.default_rng(SEED).permutation(len(all_entries))
     fold_splits = np.array_split(indices, folds)
@@ -210,13 +264,19 @@ def train(
         train_e = [all_entries[i] for i in range(len(all_entries)) if i not in val_idx]
         val_e = [all_entries[i] for i in fold_splits[fold]]
         _, vl, va = train_new_model(
-            train_e, crops, epochs, dev, SEED + fold, val_entries=val_e,
+            train_e,
+            crops,
+            epochs,
+            dev,
+            SEED + fold,
+            val_entries=val_e,
             desc=f"Fold {fold + 1}/{folds}  (train={len(train_e)}, val={len(val_e)})",
             **hp,
         )
         losses.append(vl)
         accs.append(va)
         from tqdm import tqdm as _tqdm
+
         _tqdm.write(f"  ↳ loss={vl:.4f}  acc={va:.2%}")
 
     mean_acc, std_acc = float(np.mean(accs)), float(np.std(accs))
@@ -225,34 +285,54 @@ def train(
     # Backup existing weights before overwriting so a bad retrain is recoverable.
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         backup = output.with_name(f"{output.stem}.{ts}.bak.pt")
         shutil.copy2(output, backup)
         print(f"Backed up old weights → {backup.name}")
 
     print(f"\nRetraining on all {len(all_entries)} images...")
-    model, loss, _ = train_new_model(all_entries, crops, epochs, dev, SEED,
-                                     desc="Final retrain", **hp)
+    model, loss, _ = train_new_model(
+        all_entries, crops, epochs, dev, SEED, desc="Final retrain", **hp
+    )
     torch.save(model.state_dict(), output)
     print(f"Final loss: {loss:.4f}  →  {output.resolve()}")
 
 
 @app.command("train-detector")
 def train_detector(
-    data: Annotated[Path, typer.Option(help="YOLO dataset YAML.")] = Path("data/detector/dataset.yaml"),
+    data: Annotated[Path, typer.Option(help="YOLO dataset YAML.")] = Path(
+        "data/detector/dataset.yaml"
+    ),
     model: Annotated[str, typer.Option(help="Pretrained base model.")] = "yolo11n.pt",
     epochs: Annotated[int, typer.Option(help="Training epochs.")] = 50,
     imgsz: Annotated[int, typer.Option(help="Training image size.")] = 640,
 ) -> None:
     """Train a YOLOv11n model to detect pin diagrams."""
-    _require(data, "Dataset config", "Populate data/detector/train/ and data/detector/val/ first.")
+    _require(
+        data,
+        "Dataset config",
+        "Populate data/detector/train/ and data/detector/val/ first.",
+    )
     from ultralytics import YOLO  # type: ignore[attr-defined]
 
     yolo = YOLO(model)
-    yolo.train(data=str(data.resolve()), epochs=epochs, imgsz=imgsz, batch=-1,
-               project="runs", name="pin_diagram",
-               hsv_h=0.0, hsv_s=0.0, hsv_v=0.2, degrees=5.0, translate=0.05,
-               scale=0.2, flipud=0.0, fliplr=0.0, mosaic=0.5)
+    yolo.train(
+        data=str(data.resolve()),
+        epochs=epochs,
+        imgsz=imgsz,
+        batch=-1,
+        project="runs",
+        name="pin_diagram",
+        hsv_h=0.0,
+        hsv_s=0.0,
+        hsv_v=0.2,
+        degrees=5.0,
+        translate=0.05,
+        scale=0.2,
+        flipud=0.0,
+        fliplr=0.0,
+        mosaic=0.5,
+    )
     m = yolo.val()
     print(f"\nmAP50: {m.box.map50:.4f}  |  mAP50-95: {m.box.map:.4f}")
     best = Path("runs/pin_diagram/weights/best.pt")
@@ -268,7 +348,9 @@ def tune(
     crops: CropsOpt = Path("data/classifier/crops"),
     labels: LabelsOpt = Path("data/classifier/labels.csv"),
     trials: Annotated[int, typer.Option(help="Number of Optuna trials.")] = 20,
-    epochs: Annotated[int, typer.Option(help="Epochs per trial (short — for ranking only).")] = 20,
+    epochs: Annotated[
+        int, typer.Option(help="Epochs per trial (short — for ranking only).")
+    ] = 20,
 ) -> None:
     """Hyperparameter search with Optuna."""
     import optuna
@@ -289,30 +371,43 @@ def tune(
     dev = resolve_device(None)
 
     from tqdm import tqdm as _tqdm
+
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     trial_bar = _tqdm(total=trials, desc="Tuning", unit="trial", dynamic_ncols=True)
 
     def objective(trial: optuna.Trial) -> float:
-        hp = dict(
-            lr=trial.suggest_float("lr", 5e-5, 5e-3, log=True),
-            weight_decay=trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
-            dropout=trial.suggest_float("dropout", 0.1, 0.5),
-            batch_size=trial.suggest_categorical("batch_size", [8, 16, 32]),
+        hp = {
+            "lr": trial.suggest_float("lr", 5e-5, 5e-3, log=True),
+            "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
+            "dropout": trial.suggest_float("dropout", 0.1, 0.5),
+            "batch_size": trial.suggest_categorical("batch_size", [8, 16, 32]),
+        }
+        _, vl, va = train_new_model(
+            train_entries,
+            crops,
+            epochs,
+            dev,
+            SEED,
+            val_entries=val_entries,
+            desc=f"  T{trial.number + 1}/{trials}",
+            leave=False,
+            **hp,
         )
-        _, vl, va = train_new_model(train_entries, crops, epochs, dev, SEED,
-                                    val_entries=val_entries,
-                                    desc=f"  T{trial.number + 1}/{trials}", leave=False, **hp)
         trial.set_user_attr("val_acc", va)
         trial_bar.update(1)
         trial_bar.set_postfix(loss=f"{vl:.4f}", acc=f"{va:.1%}")
         return vl
 
-    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=SEED))
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=SEED)
+    )
     study.optimize(objective, n_trials=trials, show_progress_bar=False)
     trial_bar.close()
 
     best = study.best_trial
-    print(f"\nBest trial #{best.number + 1}: loss={best.value:.4f}  acc={best.user_attrs['val_acc']:.2%}")
+    print(
+        f"\nBest trial #{best.number + 1}: loss={best.value:.4f}  acc={best.user_attrs['val_acc']:.2%}"
+    )
     for k, v in best.params.items():
         print(f"  {k}: {v}")
 
@@ -320,13 +415,15 @@ def tune(
     n_params = sum(p.numel() for p in PinClassifier().parameters())
     meta = {
         **best.params,
-        "_tuned_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "_samples":  len(all_entries),
+        "_tuned_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "_samples": len(all_entries),
         "_model_params": n_params,
     }
     HYPERPARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
     HYPERPARAMS_PATH.write_text(json.dumps(meta, indent=2) + "\n")
-    print(f"Saved to {HYPERPARAMS_PATH}  (samples={len(all_entries)}, model_params={n_params})")
+    print(
+        f"Saved to {HYPERPARAMS_PATH}  (samples={len(all_entries)}, model_params={n_params})"
+    )
 
 
 # ── Extract & Label ───────────────────────────────────────────────────────
@@ -334,38 +431,34 @@ def tune(
 
 def _detect_and_crop(image_path: Path, confidence: float = 0.25):
     """Shared: rectify → detect → crop.  Returns (rectified, sorted_dets, crops)."""
-    import cv2
+    from detect import crop_detections
+    from pipeline import detect_sheet
 
-    from detect import crop_detections, detect_pin_diagrams, load_model, sort_detections
-    from pipeline import DEFAULT_DETECTOR_PATH
-    from preprocess import rectify_sheet
-
-    raw = cv2.imread(str(image_path))
-    if raw is None:
-        raise typer.BadParameter(f"Could not load image: {image_path}")
-    rectified = rectify_sheet(raw)
-    yolo = load_model(DEFAULT_DETECTOR_PATH) if DEFAULT_DETECTOR_PATH.exists() else None
-    dets = sort_detections(detect_pin_diagrams(yolo, rectified, confidence))
-    return rectified, dets, crop_detections(rectified, dets)
+    try:
+        rectified, detections = detect_sheet(image_path, confidence=confidence)
+    except FileNotFoundError as error:
+        raise typer.BadParameter(str(error)) from error
+    return rectified, detections, crop_detections(rectified, detections)
 
 
 @app.command()
 def extract(
-    images: Annotated[list[Path], typer.Argument(help="Path(s) to scanned score sheet(s).")],
+    images: Annotated[
+        list[Path], typer.Argument(help="Path(s) to scanned score sheet(s).")
+    ],
     output: Annotated[Path, typer.Option(help="Output directory.")] = Path("output"),
     confidence: Annotated[float, typer.Option(help="Detection confidence.")] = 0.25,
 ) -> None:
     """Extract and classify pin-diagram crops from one or more sheets."""
     import csv
+
     import cv2
 
-    from classify import classify_pins_batch, load_classifier
+    from symbols import boxed_throw_scores, classify_circle_pins, classify_dash_pins
     from detect import draw_detections
     from pipeline import DEFAULT_CLASSIFIER_PATH
 
     cnn, dev = None, None
-    if DEFAULT_CLASSIFIER_PATH.exists():
-        cnn, dev = load_classifier(DEFAULT_CLASSIFIER_PATH)
 
     for idx, image in enumerate(images):
         _require(image, "Image")
@@ -389,16 +482,41 @@ def extract(
         for name, crop in zip(names, crops):
             cv2.imwrite(str(raw_dir / f"{name}.png"), crop)
 
-        classifications = []
-        if cnn is not None:
-            classifications = classify_pins_batch(cnn, crops, device=dev)
+        circle_results = [classify_circle_pins(crop) for crop in crops]
+        boxed_layout = all(result is not None for result in circle_results)
+        classifications = (
+            circle_results
+            if boxed_layout
+            else [classify_dash_pins(crop) for crop in crops]
+        )
+        if not all(result is not None for result in classifications):
+            from classify import classify_pins_batch, load_classifier
 
+            if DEFAULT_CLASSIFIER_PATH.exists():
+                if cnn is None:
+                    cnn, dev = load_classifier(DEFAULT_CLASSIFIER_PATH)
+                classifications = classify_pins_batch(cnn, crops, device=dev)
+            else:
+                classifications = []
+
+        entries = [
+            (det.column, det.row, pins) for det, (pins, _) in zip(dets, classifications)
+        ]
+        scores = (
+            boxed_throw_scores(entries)
+            if boxed_layout
+            else [sum(pins) for _, _, pins in entries]
+        )
         csv_rows: list[dict] = []
         for i, (det, crop) in enumerate(zip(dets, crops)):
             row: dict = {"name": names[i], "column": det.column, "row": det.row}
             if i < len(classifications):
                 pins, conf = classifications[i]
-                row.update(pins="".join(str(p) for p in pins), score=sum(pins), confidence=round(conf, 4))
+                row.update(
+                    pins="".join(str(p) for p in pins),
+                    score=scores[i],
+                    confidence=round(conf, 4),
+                )
             csv_rows.append(row)
             line = f"{names[i]:<14} {crop.shape[1]}x{crop.shape[0]}"
             if "pins" in row:
@@ -409,7 +527,9 @@ def extract(
             csv_path = sheet_dir / "predictions.csv"
             with open(csv_path, "w", newline="") as f:
                 csv.DictWriter(f, fieldnames=list(csv_rows[0].keys())).writeheader()
-                csv.DictWriter(f, fieldnames=list(csv_rows[0].keys())).writerows(csv_rows)
+                csv.DictWriter(f, fieldnames=list(csv_rows[0].keys())).writerows(
+                    csv_rows
+                )
             print(f"Saved to {csv_path}")
 
 
@@ -444,43 +564,57 @@ def label(crops: CropsOpt = Path("data/classifier/crops")) -> None:
     predictions: dict[str, dict] = {}
     if DEFAULT_CLASSIFIER_PATH.exists():
         cnn, dev = load_classifier(DEFAULT_CLASSIFIER_PATH)
-        imgs = [img for n in all_names if (img := cv2.imread(str(crops / n), cv2.IMREAD_GRAYSCALE)) is not None]
-        for name, (pins, conf) in zip(all_names, classify_pins_batch(cnn, imgs, device=dev)):
+        imgs = [
+            img
+            for n in all_names
+            if (img := cv2.imread(str(crops / n), cv2.IMREAD_GRAYSCALE)) is not None
+        ]
+        for name, (pins, conf) in zip(
+            all_names, classify_pins_batch(cnn, imgs, device=dev)
+        ):
             predictions[name] = {"pins": pins, "conf": round(conf, 4)}
 
     # Sort: disagreements first, then unlabeled, then agreements.
     def _sort_key(name: str) -> tuple:
         pred = predictions.get(name)
         conf = pred["conf"] if pred else 1.0
-        lbl  = existing.get(name)
+        lbl = existing.get(name)
         if lbl is not None and pred is not None:
             disagrees = pred["pins"] != lbl
             if disagrees:
-                return (0, -conf)   # group 0: disagree, highest conf first
-            return (2, conf)        # group 2: agree, lowest conf first
+                return (0, -conf)  # group 0: disagree, highest conf first
+            return (2, conf)  # group 2: agree, lowest conf first
         if lbl is None:
-            return (1, conf)        # group 1: unlabeled, lowest conf first
-        return (2, conf)            # labeled but no model → tail
+            return (1, conf)  # group 1: unlabeled, lowest conf first
+        return (2, conf)  # labeled but no model → tail
 
     crop_names = sorted(all_names, key=_sort_key)
 
     # Count groups for the startup message.
-    n_disagree = sum(1 for n in all_names
-                     if n in existing and n in predictions and predictions[n]["pins"] != existing[n])
+    n_disagree = sum(
+        1
+        for n in all_names
+        if n in existing and n in predictions and predictions[n]["pins"] != existing[n]
+    )
     n_unlabeled = sum(1 for n in all_names if n not in existing)
-    print(f"{len(all_names)} crops: {n_disagree} disagree, {n_unlabeled} unlabeled, "
-          f"{len(all_names) - n_disagree - n_unlabeled} agree")
+    print(
+        f"{len(all_names)} crops: {n_disagree} disagree, {n_unlabeled} unlabeled, "
+        f"{len(all_names) - n_disagree - n_unlabeled} agree"
+    )
     html = (Path(__file__).parent / "labeler.html").read_text()
 
     def make_handler():
         class H(SimpleHTTPRequestHandler):
-            def log_message(self, *a): pass
+            def log_message(self, *a):
+                pass
 
             def do_GET(self):
                 p = urlparse(self.path).path
                 if p == "/":
                     page = html.replace("/*CROPS_JSON*/", _json.dumps(crop_names))
-                    page = page.replace("/*PREDICTIONS_JSON*/", _json.dumps(predictions))
+                    page = page.replace(
+                        "/*PREDICTIONS_JSON*/", _json.dumps(predictions)
+                    )
                     page = page.replace("/*LABELS_JSON*/", _json.dumps(existing))
                     self._send(200, "text/html", page.encode())
                 elif p.startswith("/crop/"):
@@ -494,7 +628,9 @@ def label(crops: CropsOpt = Path("data/classifier/crops")) -> None:
 
             def do_POST(self):
                 if self.path == "/save":
-                    body = _json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    body = _json.loads(
+                        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                    )
                     if body["filename"] not in set(crop_names):
                         self._send(400, "text/plain", b"Unknown crop")
                         return
@@ -510,6 +646,7 @@ def label(crops: CropsOpt = Path("data/classifier/crops")) -> None:
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
         return H
 
     port = 8787
@@ -520,7 +657,9 @@ def label(crops: CropsOpt = Path("data/classifier/crops")) -> None:
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print(f"\nSaved to {labels_path}  ({sum(1 for n in all_names if n in existing)}/{len(all_names)} labeled)")
+        print(
+            f"\nSaved to {labels_path}  ({sum(1 for n in all_names if n in existing)}/{len(all_names)} labeled)"
+        )
 
 
 # ── Validation ────────────────────────────────────────────────────────────
@@ -530,11 +669,20 @@ def label(crops: CropsOpt = Path("data/classifier/crops")) -> None:
 def accuracy(
     crops: CropsOpt = Path("data/classifier/crops"),
     labels: LabelsOpt = Path("data/classifier/labels.csv"),
-    classifier: Annotated[Optional[Path], typer.Option(help="CNN weights (.pt).")] = None,
-    manual_only: Annotated[bool, typer.Option("--manual-only",
-        help="Evaluate only manually labeled crops (prefix = 'original_').")] = False,
-    prefix: Annotated[Optional[str], typer.Option(
-        help="Sheet prefix filter for --manual-only (default: 'original_').")] = None,
+    classifier: Annotated[Path | None, typer.Option(help="CNN weights (.pt).")] = None,
+    manual_only: Annotated[
+        bool,
+        typer.Option(
+            "--manual-only",
+            help="Evaluate only manually labeled crops (prefix = 'original_').",
+        ),
+    ] = False,
+    prefix: Annotated[
+        str | None,
+        typer.Option(
+            help="Sheet prefix filter for --manual-only (default: 'original_')."
+        ),
+    ] = None,
 ) -> None:
     """Validate CNN predictions against ground-truth labels.
 
@@ -564,7 +712,9 @@ def accuracy(
                 f"No crops with prefix '{sheet_prefix}' found. "
                 "Pass --prefix to specify a different sheet name."
             )
-        print(f"Evaluating {len(label_map)} manually labeled crops (prefix='{sheet_prefix}')")
+        print(
+            f"Evaluating {len(label_map)} manually labeled crops (prefix='{sheet_prefix}')"
+        )
 
     names = sorted(label_map)
     images, valid = [], []
@@ -589,12 +739,16 @@ def accuracy(
             mismatches.append((name, gt, pred, conf))
 
     n = len(valid)
-    print(f"\n{n} diagrams  |  pin acc: {correct_pins}/{total_pins} ({correct_pins/total_pins:.1%})"
-          f"  |  diagram acc: {correct_diags}/{n} ({correct_diags/n:.1%})")
+    print(
+        f"\n{n} diagrams  |  pin acc: {correct_pins}/{total_pins} ({correct_pins / total_pins:.1%})"
+        f"  |  diagram acc: {correct_diags}/{n} ({correct_diags / n:.1%})"
+    )
 
     if mismatches:
         print(f"\nMismatches ({len(mismatches)}):")
         for name, gt, pred, conf in sorted(mismatches):
-            print(f"  {name:<18} gt={''.join(str(p) for p in gt)}  pred={''.join(str(p) for p in pred)}  conf={conf:.0%}")
+            print(
+                f"  {name:<18} gt={''.join(str(p) for p in gt)}  pred={''.join(str(p) for p in pred)}  conf={conf:.0%}"
+            )
     else:
         print("Perfect accuracy! 🎯")

@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from augment import AugmentConfig, augment
+from symbols import classify_pin_symbols
 from model import PinClassifier
 
 TTA_PASSES: int = 5
@@ -47,7 +48,9 @@ def resolve_device(device: torch.device | str | None) -> torch.device:
 
 
 def load_classifier(
-    weights_path: Path, *, device: torch.device | str | None = None,
+    weights_path: Path,
+    *,
+    device: torch.device | str | None = None,
 ) -> tuple[PinClassifier, torch.device]:
     """Load a trained PinClassifier from disk."""
     if not weights_path.exists():
@@ -55,11 +58,13 @@ def load_classifier(
     dev = resolve_device(device)
     model = PinClassifier()
     try:
-        model.load_state_dict(torch.load(weights_path, map_location=dev, weights_only=True))
+        model.load_state_dict(
+            torch.load(weights_path, map_location=dev, weights_only=True)
+        )
     except RuntimeError as e:
         raise RuntimeError(
             f"Cannot load weights from {weights_path}. "
-            "Architecture may have changed — retrain with `just train`."
+            "Architecture may have changed — retrain with `just train-classifier`."
         ) from e
     model.to(dev).eval()
     return model, dev
@@ -90,23 +95,36 @@ def classify_pins_batch(
     if device is None:
         device = next(model.parameters()).device
 
+    results: list[tuple[list[int], float] | None] = [
+        classify_pin_symbols(crop) for crop in crops
+    ]
+    cnn_indices = [index for index, result in enumerate(results) if result is None]
+    if not cnn_indices:
+        return [result for result in results if result is not None]
+
+    cnn_crops = [crops[index] for index in cnn_indices]
     rng = np.random.default_rng(42)
     acc: torch.Tensor | None = None
     for i in range(TTA_PASSES):
         if i == 0:
-            arrays = [preprocess_crop(c) for c in crops]
+            arrays = [preprocess_crop(crop) for crop in cnn_crops]
         else:
-            grays = [cv2.cvtColor(c, cv2.COLOR_BGR2GRAY) if c.ndim == 3 else c for c in crops]
-            arrays = [preprocess_crop(augment(g, rng, _TTA_CFG)) for g in grays]
-        probs = torch.sigmoid(model(torch.from_numpy(np.stack(arrays)).unsqueeze(1).to(device)))
+            grays = [
+                cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+                for crop in cnn_crops
+            ]
+            arrays = [preprocess_crop(augment(gray, rng, _TTA_CFG)) for gray in grays]
+        probs = torch.sigmoid(
+            model(torch.from_numpy(np.stack(arrays)).unsqueeze(1).to(device))
+        )
         acc = probs if acc is None else acc + probs
 
     avg = acc / TTA_PASSES  # type: ignore[operator]
-    # Move the entire result to CPU in two bulk transfers instead of one
-    # per-item transfer (which adds 90+ round-trips on MPS/CUDA).
-    avg_cpu  = avg.cpu()                                        # B×9
-    conf_cpu = ((avg - 0.5).abs().mean(dim=1) * 2.0).cpu()     # B
-    return [
-        ((avg_cpu[i] >= threshold).int().tolist(), float(conf_cpu[i]))
-        for i in range(avg_cpu.size(0))
-    ]
+    avg_cpu = avg.cpu()
+    conf_cpu = ((avg - 0.5).abs().mean(dim=1) * 2.0).cpu()
+    for output_index, crop_index in enumerate(cnn_indices):
+        results[crop_index] = (
+            (avg_cpu[output_index] >= threshold).int().tolist(),
+            float(conf_cpu[output_index]),
+        )
+    return [result for result in results if result is not None]

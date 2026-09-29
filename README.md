@@ -4,13 +4,12 @@ Extract 9-pin bowling (Kegeln) scores from scanned score sheets using computer v
 
 ## Features
 
-- **YOLO pin diagram detection** with classical blob-analysis fallback
-- **CNN pin state classification** — 3-layer backbone + spatial extraction + TTA (~60K params)
-- **OCR cross-validation** — optional parallel Tesseract verification (`--ocr`)
+- **Layout-aware detection** — contour geometry for boxed diagrams, YOLO for the older unboxed layout
+- **Hybrid classification** — geometry for both symbol styles, with a small CNN fallback
 - **Sheet preprocessing** — perspective correction and CLAHE contrast normalisation
-- **Browser-based labeling UI** — disagreements-first sort, pin overlay on image
-- **Hyperparameter tuning** — Optuna search with cosine-warmup schedule
-- **~400 ms/sheet** without OCR, ~800 ms with OCR
+- **Optional OCR cross-check** with Tesseract (`--ocr`)
+- **Browser labeling UI** and classifier training tools
+- **~100 ms/sheet** for the boxed-circle layout after imports
 
 ## Pin Layout
 
@@ -27,8 +26,9 @@ Extract 9-pin bowling (Kegeln) scores from scanned score sheets using computer v
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync                   # core dependencies
-uv sync --extra dev       # + pytest, ruff
+uv sync                   # inference dependencies
+uv sync --extra dev       # + ruff
+uv sync --extra train     # + Optuna and tqdm
 uv sync --extra ocr       # + pytesseract (optional)
 ```
 
@@ -42,9 +42,10 @@ just collect sheets/*                 # harvest training crops from all sheets
 just collect sheets/* --overwrite     # refresh pseudo-labels after retraining
 just label                            # label ground truth (browser UI)
 just tune                             # hyperparameter search (20 trials)
-just train                            # k-fold cross-validate + retrain
+just train-classifier                 # k-fold cross-validate + retrain
 just accuracy                         # full dataset accuracy
 just accuracy --manual-only           # hand-labeled crops only
+uv run python scripts/show_detections.py sheets/new_version.jpeg -o boxes.png
 ```
 
 ## Project Structure
@@ -64,9 +65,10 @@ models/
   pin_classifier.pt        CNN classifier weights
   hyperparams.json         tuned training hyperparameters
 src/
-  pipeline.py              orchestrates the full flow (model LRU cache)
+  pipeline.py              orchestrates the full flow and loads models lazily
   preprocess.py            perspective correction + CLAHE
-  detect.py                YOLO detection (classical fallback if < 10 boxes)
+  detect.py                boxed-cell geometry, YOLO, and blob fallback
+  symbols.py               deterministic circle and dot/dash classification
   classify.py              PinClassifier CNN + 5-pass TTA
   ocr.py                   optional parallel Tesseract cross-validation
   model.py                 PinClassifier architecture
@@ -82,10 +84,11 @@ src/
 ```
 raw photo
   → preprocess.py    perspective correction + CLAHE
-  → detect.py        YOLO detection (classical fallback if < 10 boxes)
-  → classify.py      PinClassifier CNN + 5-pass TTA
-  → ocr.py           optional parallel Tesseract cross-validation
-  → pipeline.py      orchestrates the full flow (model LRU cache)
+  → detect.py        boxed-cell geometry, then YOLO/blob fallback
+  → symbols.py       geometric classification for both symbol styles
+  → classify.py      CNN fallback for ambiguous diagrams
+  → ocr.py           optional Tesseract cross-check
+  → pipeline.py      orchestration and lazy model loading
 ```
 
 ### PinClassifier
@@ -111,10 +114,20 @@ Local + global are concatenated (128-dim) and fed to a shared 2-layer head
 | `train-detector` | Train YOLO detector |
 | `accuracy` | Validate predictions against labels |
 
+## Model choice
+
+A larger detector is not the main improvement for this task. The sheet has a
+strong grid and fixed nine-pin geometry, so deterministic OpenCV code handles
+the new boxed format more reliably and faster than a model. The YOLO weights
+remain useful for the older unboxed format.
+
+If more layouts must be learned, first build a sheet-level split with examples
+from each printer and camera condition. Do not use copies of one image for both
+training and validation. A small YOLO model is sufficient after that; larger
+YOLO or RT-DETR models will not compensate for missing layout variance.
+
 ## Development
 
 ```bash
-just test           # unit tests
 just lint           # ruff check + format
-just integration    # end-to-end tests (requires model weights)
 ```

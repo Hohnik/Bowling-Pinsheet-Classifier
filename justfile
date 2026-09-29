@@ -1,37 +1,29 @@
 _default:
     @just --list --unsorted
 
-# Install all dependencies (including dev)
-install:
-    uv sync --all-extras
-
-# Run unit tests
-test:
-    uv run pytest -q
-
-# Run integration tests (requires model weights)
-integration:
-    uv run pytest -q -m integration
-
 # Lint and format with ruff
 lint:
-    uv run ruff check . --fix && uv run ruff format .
+    uv run --extra dev ruff check . --fix && uv run --extra dev ruff format .
 
 # K-fold cross-validate then retrain the CNN classifier
-train *args:
-    uv run pinsheet-scanner train {{ args }}
-
-# Hyperparameter tuning with Optuna
-tune *args:
-    uv run pinsheet-scanner tune {{ args }}
+train-classifier *args:
+    uv run --extra train pinsheet-scanner train {{ args }}
 
 # Train the YOLO detector for pin diagram bounding boxes
 train-detector *args:
     uv run pinsheet-scanner train-detector {{ args }}
 
+# Hyperparameter tuning with Optuna
+tune *args:
+    uv run --extra train pinsheet-scanner tune {{ args }}
+
 # Scan one or more score sheets and print results
 scan *args:
     uv run pinsheet-scanner scan {{ args }}
+
+# Draw every detected diagram box on a sheet image
+boxes image output="example.png":
+    uv run python scripts/show_detections.py {{ image }} --output {{ output }}
 
 # Harvest high-confidence crops from sheet(s) into the training set
 collect *args="sheets/*":
@@ -48,7 +40,3 @@ label *args:
 # Compare ground-truth labels against CNN predictions
 accuracy *args:
     uv run pinsheet-scanner accuracy {{ args }}
-
-# Profile the scan pipeline (cProfile + pyinstrument flame graph)
-profile:
-    uv run python scripts/profile_scan.py

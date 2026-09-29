@@ -1,40 +1,33 @@
 [project]
-name = "pinsheet-scanner"
-version = "0.2.0"
-description = "Extract 9-pin bowling (Kegeln) scores from scanned score sheets using YOLO for detection and a CNN classifier for pin state classification."
+name = "pin"
+version = "0.3.0"
+description = "Two-model nine-pin score-sheet scanning with OpenCV"
 readme = "README.md"
-authors = [
-    { name = "Hohnik", email = "mail@niklashohn.com" }
-]
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.4.2",
     "opencv-python>=4.13.0.92",
-    "torch>=2.0.0",
-    "typer>=0.23.1",
+]
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.16.0",
+]
+train = [
+    "albumentations>=2.0.8",
+    "modal>=1.6.0",
+    "onnx>=1.19.0",
+    "onnxslim>=0.1.71",
+    "torch>=2.9.0",
     "ultralytics>=8.3.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "ruff>=0.8.0",
-]
-ocr = [
-    "pytesseract>=0.3.10",
-]
-train = [
-    "optuna>=4.7.0",
-    "tqdm>=4.67.3",
-]
-
-[project.scripts]
-pinsheet-scanner = "cli:app"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
-sources = {"src" = ""}
-artifacts = ["src/labeler.html"]
+[tool.ruff]
+extend-exclude = [".agents"]
+lint.extend-select = ["C901"]
+lint.mccabe.max-complexity = 8

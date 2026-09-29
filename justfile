@@ -1,42 +1,39 @@
-_default:
-    @just --list --unsorted
+# Use `just <recipe>` to execute a task
+@_default:
+    -just --list --unsorted
 
-# Lint and format with ruff
-lint:
-    uv run --extra dev ruff check . --fix && uv run --extra dev ruff format .
+# Format and lint the project
+[group('ci')]
+check:
+    @uv run ruff format
+    @uv run ruff check --fix
 
-# K-fold cross-validate then retrain the CNN classifier
-train-classifier *args:
-    uv run --extra train pinsheet-scanner train {{ args }}
+# Run regression tests
+[group('ci')]
+test:
+    uv run pytest -q
 
-# Train the YOLO detector for pin diagram bounding boxes
-train-detector *args:
-    uv run pinsheet-scanner train-detector {{ args }}
+# Label pin-field boxes for the field extractor
+[group('labeling')]
+label-sheets *images:
+    uv run scripts/label_sheets.py {{ images }}
 
-# Hyperparameter tuning with Optuna
-tune *args:
-    uv run --extra train pinsheet-scanner tune {{ args }}
+# Label the nine pins for the pin classifier
+[group('labeling')]
+label-crops *images:
+    uv run scripts/label_crops.py {{ images }}
 
-# Scan one or more score sheets and print results
+# Train the field extractor on a Modal L4 and export ONNX
+[group('train')]
+train-sheets *args:
+    uv run --group train modal run scripts/train_sheets.py {{ args }}
+
+# Train the pin classifier and export ONNX
+[group('train')]
+train-crops *args:
+    uv run --group train scripts/train_crops.py {{ args }}
+
+# Run both models; add -v to save pipeline images
+[group('inference')]
 scan *args:
-    uv run pinsheet-scanner scan {{ args }}
-
-# Draw every detected diagram box on a sheet image
-boxes image output="example.png":
-    uv run python scripts/show_detections.py {{ image }} --output {{ output }}
-
-# Harvest high-confidence crops from sheet(s) into the training set
-collect *args="sheets/*":
-    uv run pinsheet-scanner collect {{ args }}
-
-# Extract crops from one or more score sheet images
-extract *args="sheets/*":
-    uv run pinsheet-scanner extract {{ args }}
-
-# Open the labeling UI to annotate ground-truth pin states
-label *args:
-    uv run pinsheet-scanner label {{ args }}
-
-# Compare ground-truth labels against CNN predictions
-accuracy *args:
-    uv run pinsheet-scanner accuracy {{ args }}
+    @uv run scripts/scan.py {{ args }}
